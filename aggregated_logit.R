@@ -8,6 +8,7 @@ library(tibble)
 library(stringr)
 library(tidyr)
 library(ggplot2)
+library(purrr)
 
 
 setwd("C:/Users/LENOVO/Documents/GitHub/mixedlogit_uk")
@@ -112,6 +113,86 @@ mod_B <- fepois(
 
 summary(mod_B)
 
+
+df_choice <- df_choice %>%
+  mutate(
+    frac_homoe_sq = frac_homoe^2,
+    frac_homos_sq = frac_homos^2
+  )
+
+mod_B_quad <- fepois(
+  n ~ i(group_year, frac_homoe) +
+    i(group_year, frac_homoe_sq) +
+    i(group_year, frac_homos) +
+    i(group_year, frac_homos_sq) | group_year,
+  offset = ~ log(pop_borough),
+  data = df_choice,
+  fixef.rm = "none"
+)
+
+
+# comparison
+
+model_comparison <- tibble(
+  Model = c("A: No offset", "B: Population offset"),
+  LogLik = c(
+    as.numeric(logLik(mod_A)),
+    as.numeric(logLik(mod_B))
+  ),
+  AIC = c(AIC(mod_A), AIC(mod_B)),
+  BIC = c(BIC(mod_A), BIC(mod_B))
+)
+
+model_comparison
+
+df_compare <- df_choice %>%
+  mutate(
+    pred_A = as.numeric(
+      predict(mod_A, type = "response")
+    ),
+    pred_B = as.numeric(
+      predict(mod_B, type = "response")
+    )
+  ) %>%
+  group_by(group, year) %>%
+  mutate(
+    observed_prob = n / sum(n),
+    
+    prob_A = pred_A / sum(pred_A),
+    prob_B = pred_B / sum(pred_B)
+  ) %>%
+  ungroup()
+
+model_fit <- df_compare %>%
+  group_by(group, year) %>%
+  summarise(
+    TVD_A = 0.5 * sum(abs(observed_prob - prob_A)),
+    TVD_B = 0.5 * sum(abs(observed_prob - prob_B)),
+    
+    RMSE_A = sqrt(mean((observed_prob - prob_A)^2)),
+    RMSE_B = sqrt(mean((observed_prob - prob_B)^2)),
+    
+    MAE_A = mean(abs(observed_prob - prob_A)),
+    MAE_B = mean(abs(observed_prob - prob_B)),
+    
+    .groups = "drop"
+  )
+
+model_fit %>%
+  summarise(
+    mean_TVD_A = mean(TVD_A),
+    mean_TVD_B = mean(TVD_B),
+    
+    mean_RMSE_A = mean(RMSE_A),
+    mean_RMSE_B = mean(RMSE_B),
+    
+    B_better_TVD = sum(TVD_B < TVD_A),
+    A_better_TVD = sum(TVD_A < TVD_B)
+  )
+
+
+#
+
 results <- tidy(mod_B) %>%
   filter(
     grepl("frac_homoe|frac_homos", term)
@@ -144,8 +225,8 @@ identification_check <- df_choice %>%
 summary(identification_check)
 
 results <- tibble(
-  term = names(coef(mod_B)),
-  estimate = unname(coef(mod_B))
+  term = names(coef(mod_B_quad)),
+  estimate = unname(coef(mod_B_quad))
 ) %>%
   filter(str_detect(term, "frac_homoe|frac_homos")) %>%
   mutate(
@@ -165,134 +246,134 @@ results <- tibble(
   ) %>%
   select(group, year, dimension, estimate)
 
-# Calculate IQRs within each subgroup and wave
-iqr_data <- df_choice %>%
-  group_by(group, year) %>%
-  summarise(
-    Ethnic = IQR(frac_homoe, na.rm = TRUE),
-    `Social class` = IQR(frac_homos, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  pivot_longer(
-    cols = c(Ethnic, `Social class`),
-    names_to = "dimension",
-    values_to = "IQR"
-  )
-
-# Join estimated coefficients to the IQRs
-results_iqr <- results %>%
-  mutate(year = as.integer(year)) %>%
-  left_join(
-    iqr_data,
-    by = c("group", "year", "dimension")
-  ) %>%
-  mutate(
-    effect_IQR = estimate * IQR,
-    OR_IQR = exp(effect_IQR)
-  )
-
-results_iqr %>%
-  filter(group %in% c(
-    "asian_indian_sc1",
-    "asian_chinese_sc1",
-    "asian_indian_sc7"
-  )) %>%
-  arrange(group, year, dimension)
-
-ggplot(
-  results_iqr,
-  aes(
-    x = factor(year),
-    y = effect_IQR,
-    color = dimension,
-    group = dimension
-  )
-) +
-  geom_line() +
-  geom_point(size = 2) +
-  facet_wrap(~group, scales = "free_y") +
-  labs(
-    x = "Census wave",
-    y = "IQR-adjusted log relative odds",
-    color = "Dimension"
-  ) +
-  theme_bw()
-
-ggplot(
-  results_iqr,
-  aes(
-    x = factor(year),
-    y = group,
-    fill = effect_IQR
-  )
-) +
-  geom_tile() +
-  facet_wrap(~dimension, nrow = 1) +
-  scale_fill_gradient2(midpoint = 0) +
-  labs(
-    x = "Census wave",
-    y = "Ethnic–social-class subgroup",
-    fill = "IQR effect"
-  ) +
-  theme_minimal()
-
-comparison <- results_iqr %>%
-  select(group, year, dimension, effect_IQR) %>%
-  pivot_wider(
-    names_from = dimension,
-    values_from = effect_IQR
-  ) %>%
-  mutate(
-    difference = Ethnic - `Social class`
-  )
-
-ggplot(
-  comparison,
-  aes(
-    x = factor(year),
-    y = reorder(group, difference),
-    fill = difference
-  )
-) +
-  geom_tile() +
-  scale_fill_gradient2(midpoint = 0) +
-  labs(
-    x = "Census wave",
-    y = "Subgroup",
-    fill = "Ethnic − class"
-  ) +
-  theme_minimal()
-
-df_prob <- df_choice %>%
-  mutate(
-    predicted_n = as.numeric(
-      predict(mod_B, newdata = df_choice, type = "response")
-    )
-  ) %>%
-  group_by(group, year) %>%
-  mutate(
-    predicted_prob = predicted_n / sum(predicted_n),
-    observed_prob = n / sum(n)
-  ) %>%
-  ungroup()
-
-model_fit <- df_prob %>%
-  group_by(group, year) %>%
-  summarise(
-    MAE = mean(
-      abs(observed_prob - predicted_prob)
-    ),
-    
-    RMSE = sqrt(mean(
-      (observed_prob - predicted_prob)^2
-    )),
-    
-    TVD = 0.5 * sum(
-      abs(observed_prob - predicted_prob)
-    ),
-    
-    .groups = "drop"
-  )
+# # Calculate IQRs within each subgroup and wave
+# iqr_data <- df_choice %>%
+#   group_by(group, year) %>%
+#   summarise(
+#     Ethnic = IQR(frac_homoe, na.rm = TRUE),
+#     `Social class` = IQR(frac_homos, na.rm = TRUE),
+#     .groups = "drop"
+#   ) %>%
+#   pivot_longer(
+#     cols = c(Ethnic, `Social class`),
+#     names_to = "dimension",
+#     values_to = "IQR"
+#   )
+# 
+# # Join estimated coefficients to the IQRs
+# results_iqr <- results %>%
+#   mutate(year = as.integer(year)) %>%
+#   left_join(
+#     iqr_data,
+#     by = c("group", "year", "dimension")
+#   ) %>%
+#   mutate(
+#     effect_IQR = estimate * IQR,
+#     OR_IQR = exp(effect_IQR)
+#   )
+# 
+# results_iqr %>%
+#   filter(group %in% c(
+#     "asian_indian_sc1",
+#     "asian_chinese_sc1",
+#     "asian_indian_sc7"
+#   )) %>%
+#   arrange(group, year, dimension)
+# 
+# ggplot(
+#   results_iqr,
+#   aes(
+#     x = factor(year),
+#     y = effect_IQR,
+#     color = dimension,
+#     group = dimension
+#   )
+# ) +
+#   geom_line() +
+#   geom_point(size = 2) +
+#   facet_wrap(~group, scales = "free_y") +
+#   labs(
+#     x = "Census wave",
+#     y = "IQR-adjusted log relative odds",
+#     color = "Dimension"
+#   ) +
+#   theme_bw()
+# 
+# ggplot(
+#   results_iqr,
+#   aes(
+#     x = factor(year),
+#     y = group,
+#     fill = effect_IQR
+#   )
+# ) +
+#   geom_tile() +
+#   facet_wrap(~dimension, nrow = 1) +
+#   scale_fill_gradient2(midpoint = 0) +
+#   labs(
+#     x = "Census wave",
+#     y = "Ethnic–social-class subgroup",
+#     fill = "IQR effect"
+#   ) +
+#   theme_minimal()
+# 
+# comparison <- results_iqr %>%
+#   select(group, year, dimension, effect_IQR) %>%
+#   pivot_wider(
+#     names_from = dimension,
+#     values_from = effect_IQR
+#   ) %>%
+#   mutate(
+#     difference = Ethnic - `Social class`
+#   )
+# 
+# ggplot(
+#   comparison,
+#   aes(
+#     x = factor(year),
+#     y = reorder(group, difference),
+#     fill = difference
+#   )
+# ) +
+#   geom_tile() +
+#   scale_fill_gradient2(midpoint = 0) +
+#   labs(
+#     x = "Census wave",
+#     y = "Subgroup",
+#     fill = "Ethnic − class"
+#   ) +
+#   theme_minimal()
+# 
+# df_prob <- df_choice %>%
+#   mutate(
+#     predicted_n = as.numeric(
+#       predict(mod_B, newdata = df_choice, type = "response")
+#     )
+#   ) %>%
+#   group_by(group, year) %>%
+#   mutate(
+#     predicted_prob = predicted_n / sum(predicted_n),
+#     observed_prob = n / sum(n)
+#   ) %>%
+#   ungroup()
+# 
+# model_fit <- df_prob %>%
+#   group_by(group, year) %>%
+#   summarise(
+#     MAE = mean(
+#       abs(observed_prob - predicted_prob)
+#     ),
+#     
+#     RMSE = sqrt(mean(
+#       (observed_prob - predicted_prob)^2
+#     )),
+#     
+#     TVD = 0.5 * sum(
+#       abs(observed_prob - predicted_prob)
+#     ),
+#     
+#     .groups = "drop"
+#   )
 
 ##
 
@@ -316,7 +397,44 @@ coef_df <- tibble(
   pivot_wider(
     names_from = dimension,
     values_from = estimate
-  )
+  ) %>%
+  extract(
+    group_year,
+    into = c("ethnicity", "socstatus", "year"),
+    regex = "^(?:asian|black|white|mixed)_(.*)_(sc[1-7])_(\\d{4})$",
+    remove = FALSE
+  ) %>%
+  mutate(
+    group = paste(ethnicity, socstatus, sep = "_"),
+    year = as.integer(year)
+  ) %>%
+  relocate(group, ethnicity, socstatus, year, .after = group_year)
+
+
+coef_df %>% pivot_longer(
+  cols = c(beta_E,beta_S),
+  names_to = "dimension",
+  values_to = "coefficient"
+) %>% filter(socstatus %in%  c("sc1","sc7")) %>%
+  ggplot(aes(x = year, y = coefficient, 
+             color = socstatus, 
+             linetype = dimension)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ ethnicity, scales = "free_y") +
+  scale_x_continuous(breaks = c(2001, 2011, 2021)) +
+  theme_bw()
+
+
+
+
+
+
+
+
+
+
+
 
 g <- "white_ewsnib_sc1"
 t <- 2001
@@ -591,4 +709,209 @@ ggplot(
   ) +
   theme_bw()
 
+# PROB
 
+simulate_mean_probability <- function(
+    model,
+    data,
+    subgroup,
+    census_year,
+    dimension = "ethnic",
+    values = seq(0, 1, 0.01)
+) {
+  
+  base <- data %>%
+    filter(
+      group == subgroup,
+      year == census_year
+    )
+  
+  var <- if (dimension == "ethnic") {
+    "frac_homoe"
+  } else if (dimension == "social") {
+    "frac_homos"
+  } else {
+    stop("Invalid dimension")
+  }
+  
+  map_dfr(values, function(x) {
+    
+    borough_probs <- map_dbl(
+      unique(base$borough),
+      function(b) {
+        
+        simulated <- base
+        
+        simulated[[var]][
+          simulated$borough == b
+        ] <- x
+        
+        simulated <- simulated %>%
+          mutate(
+            frac_homoe_sq = frac_homoe^2,
+            frac_homos_sq = frac_homos^2
+          )
+        
+        pred <- as.numeric(
+          predict(
+            model,
+            newdata = simulated,
+            type = "response"
+          )
+        )
+        
+        prob <- pred / sum(pred)
+        
+        prob[simulated$borough == b]
+      }
+    )
+    
+    tibble(
+      concentration = x,
+      mean_probability = mean(borough_probs),
+      dimension = dimension
+    )
+  })
+}
+
+sim_mean <- bind_rows(
+  simulate_mean_probability(
+    mod_B_quad, df_choice,
+    subgroup = "asian_indian_sc1",
+    census_year = 2021,
+    dimension = "ethnic"
+  ),
+  simulate_mean_probability(
+    mod_B_quad, df_choice,
+    subgroup = "asian_indian_sc1",
+    census_year = 2021,
+    dimension = "social"
+  )
+)
+
+ggplot(sim_mean,
+       aes(x = concentration,
+           y = mean_probability,
+           color = dimension)) +
+  geom_line(linewidth = 1.1) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    x = "Simulated concentration",
+    y = "Average predicted choice probability",
+    color = "Dimension"
+  ) +
+  theme_bw()
+
+##
+
+simulate_mean_fast <- function(
+    model,
+    data,
+    subgroup,
+    census_year,
+    dimension = "ethnic",
+    values = seq(0, 1, by = 0.01)
+) {
+  
+  base <- data %>%
+    filter(
+      group == subgroup,
+      year == census_year
+    ) %>%
+    mutate(
+      frac_homoe_sq = frac_homoe^2,
+      frac_homos_sq = frac_homos^2
+    )
+  
+  # Predizioni iniziali
+  pred <- as.numeric(
+    predict(model, newdata = base, type = "response")
+  )
+  
+  p0 <- pred / sum(pred)
+  
+  # Coefficienti del sottogruppo-anno
+  gy <- unique(base$group_year)
+  
+  stopifnot(length(gy) == 1)
+  
+  cf <- coef(model)
+  
+  var <- if (dimension == "ethnic") {
+    "frac_homoe"
+  } else {
+    "frac_homos"
+  }
+  
+  beta1 <- unname(cf[paste0("group_year::", gy, ":", var)])
+  beta2 <- unname(cf[paste0("group_year::", gy, ":", var, "_sq")])
+  
+  stopifnot(
+    length(beta1) == 1,
+    length(beta2) == 1,
+    !is.na(beta1),
+    !is.na(beta2)
+  )
+  
+  old <- base[[var]]
+  
+  # Ogni colonna corrisponde a un borough,
+  # ogni riga a una concentrazione simulata
+  delta <- outer(values, old, function(x, c) {
+    beta1 * (x - c) +
+      beta2 * (x^2 - c^2)
+  })
+  
+  # Formula esatta della probabilità controfattuale
+  # modificando un solo borough per volta
+  z <- exp(pmin(delta, 700))
+  
+  prob <- sweep(z, 2, p0, "*") /
+    (1 + sweep(z - 1, 2, p0, "*"))
+  
+  tibble(
+    concentration = values,
+    mean_probability = rowMeans(prob),
+    dimension = dimension,
+    year = census_year,
+    group = subgroup
+  )
+}
+
+sim_mean <- purrr::map_dfr(
+  c(2001, 2011, 2021),
+  function(y) {
+    purrr::map_dfr(
+      c("ethnic", "social"),
+      function(d) {
+        simulate_mean_fast(
+          model = mod_B_quad,
+          data = df_choice,
+          subgroup = "asian_indian_sc7",
+          census_year = y,
+          dimension = d
+        )
+      }
+    )
+  }
+)
+
+ggplot(
+  sim_mean,
+  aes(
+    x = concentration,
+    y = mean_probability,
+    color = dimension
+  )
+) +
+  geom_line(linewidth = 1.1) +
+  facet_wrap(~ year) +
+  scale_y_continuous(
+    labels = scales::percent
+  ) +
+  labs(
+    x = "Simulated concentration",
+    y = "Average predicted choice probability",
+    color = "Dimension"
+  ) +
+  theme_bw()
