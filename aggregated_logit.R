@@ -9,7 +9,7 @@ library(stringr)
 library(tidyr)
 library(ggplot2)
 library(purrr)
-
+library(writexl)
 
 setwd("C:/Users/LENOVO/Documents/GitHub/mixedlogit_uk")
 
@@ -70,6 +70,13 @@ df_choice$frac_homos <-
     ]
   )
 
+# the fraction is put on the scale 0-100 to facilitate reading of log-odds and odds ratio
+df_choice <- df_choice %>%
+  mutate(
+    frac_homoe = frac_homoe * 100,
+    frac_homos = frac_homos * 100
+  )
+
 df_choice %>%
   group_by(group_year) %>%
   summarise(
@@ -79,6 +86,7 @@ df_choice %>%
   ) %>%
   print(n = 20)
 
+# sensitivity test (ignore)
 stopifnot(
   !anyNA(df_choice$frac_homoe),
   !anyNA(df_choice$frac_homos),
@@ -86,11 +94,14 @@ stopifnot(
   all(df_choice$pop_borough > 0),
   all(df_choice$n >= 0),
   all(df_choice$frac_homoe >= 0 &
-        df_choice$frac_homoe <= 1),
+        df_choice$frac_homoe <= 100),
   all(df_choice$frac_homos >= 0 &
-        df_choice$frac_homos <= 1)
+        df_choice$frac_homos <= 100)
 )
 
+# aggregated conditional model
+
+# only fractions ses and ethnicity
 mod_A <- fepois(
   n ~
     i(group_year, frac_homoe) +
@@ -111,9 +122,7 @@ mod_B <- fepois(
   fixef.rm = "none"
 )
 
-summary(mod_B)
-
-
+# for the quadratic model
 df_choice <- df_choice %>%
   mutate(
     frac_homoe_sq = frac_homoe^2,
@@ -121,267 +130,114 @@ df_choice <- df_choice %>%
   )
 
 mod_B_quad <- fepois(
-  n ~ i(group_year, frac_homoe) +
+  n ~
+    i(group_year, frac_homoe) +
     i(group_year, frac_homoe_sq) +
     i(group_year, frac_homos) +
-    i(group_year, frac_homos_sq) | group_year,
+    i(group_year, frac_homos_sq) |
+    group_year,
   offset = ~ log(pop_borough),
   data = df_choice,
   fixef.rm = "none"
 )
 
 
-# comparison
+# comparison of models
+
+dfcomp1 <- mod_B
+dfcomp2 <- mod_B_quad
+namedfcomp1 <- "mod_B"
+namedfcomp2 <- "mod_B_quad"
 
 model_comparison <- tibble(
-  Model = c("A: No offset", "B: Population offset"),
+ Model = c(namedfcomp1,namedfcomp2),
   LogLik = c(
-    as.numeric(logLik(mod_A)),
-    as.numeric(logLik(mod_B))
+    as.numeric(logLik(dfcomp1)),
+    as.numeric(logLik(dfcomp2))
   ),
-  AIC = c(AIC(mod_A), AIC(mod_B)),
-  BIC = c(BIC(mod_A), BIC(mod_B))
+  AIC = c(AIC(dfcomp1), AIC(dfcomp2)),
+  BIC = c(BIC(dfcomp1), BIC(dfcomp2))
 )
 
 model_comparison
+write_xlsx(model_comparison, paste0("model_comparison/model_comparison","_",namedfcomp1,"_",namedfcomp2,".xlsx"))
+
+# predicted probabilities by the model pred_
+# observed probabilities from count number over the total count by groupyear
+# predict() gives the number of residential counts, then normalized by population
+# to get probabilities
 
 df_compare <- df_choice %>%
   mutate(
-    pred_A = as.numeric(
-      predict(mod_A, type = "response")
+    pred_1 = as.numeric(
+      predict(dfcomp1, type = "response")
     ),
-    pred_B = as.numeric(
-      predict(mod_B, type = "response")
+    pred_2 = as.numeric(
+      predict(dfcomp2, type = "response")
     )
   ) %>%
   group_by(group, year) %>%
   mutate(
     observed_prob = n / sum(n),
     
-    prob_A = pred_A / sum(pred_A),
-    prob_B = pred_B / sum(pred_B)
+    prob_1 = pred_1 / sum(pred_1),
+    prob_2 = pred_2 / sum(pred_2)
   ) %>%
   ungroup()
 
 model_fit <- df_compare %>%
   group_by(group, year) %>%
   summarise(
-    TVD_A = 0.5 * sum(abs(observed_prob - prob_A)),
-    TVD_B = 0.5 * sum(abs(observed_prob - prob_B)),
+    TVD_1 = 0.5 * sum(abs(observed_prob - prob_1)),
+    TVD_2 = 0.5 * sum(abs(observed_prob - prob_2)),
     
-    RMSE_A = sqrt(mean((observed_prob - prob_A)^2)),
-    RMSE_B = sqrt(mean((observed_prob - prob_B)^2)),
+    RMSE_1 = sqrt(mean((observed_prob - prob_1)^2)),
+    RMSE_2 = sqrt(mean((observed_prob - prob_2)^2)),
     
-    MAE_A = mean(abs(observed_prob - prob_A)),
-    MAE_B = mean(abs(observed_prob - prob_B)),
+    MAE_1 = mean(abs(observed_prob - prob_1)),
+    MAE_2 = mean(abs(observed_prob - prob_2)),
     
     .groups = "drop"
   )
 
 model_fit %>%
   summarise(
-    mean_TVD_A = mean(TVD_A),
-    mean_TVD_B = mean(TVD_B),
+    mean_TVD_1 = mean(TVD_1),
+    mean_TVD_2 = mean(TVD_2),
     
-    mean_RMSE_A = mean(RMSE_A),
-    mean_RMSE_B = mean(RMSE_B),
+    mean_RMSE_1 = mean(RMSE_1),
+    mean_RMSE_2 = mean(RMSE_2),
     
-    B_better_TVD = sum(TVD_B < TVD_A),
-    A_better_TVD = sum(TVD_A < TVD_B)
-  )
-
+    better_2_TVD = sum(TVD_2 < TVD_1),
+    better_1_TVD = sum(TVD_1 < TVD_2)
+  )  %>%
+  write_xlsx(paste0("model_comparison/model_fit","_",namedfcomp1,"_",namedfcomp2,".xlsx"))
 
 #
 
-results <- tidy(mod_B) %>%
-  filter(
-    grepl("frac_homoe|frac_homos", term)
-  ) %>%
+mod_B_quad %>%
+  coeftable() %>%
+  as.data.frame() %>%
+  rownames_to_column("term") %>%
   mutate(
-    dimension = if_else(
-      grepl("frac_homoe", term),
-      "Ethnic",
-      "Social class"
-    ),
-    OR_10pp = exp(estimate * 0.10)
-  )
+    significance = case_when(
+      `Pr(>|z|)` < 0.001 ~ "***",
+      `Pr(>|z|)` < 0.01  ~ "**",
+      `Pr(>|z|)` < 0.05  ~ "*",
+      `Pr(>|z|)` < 0.1   ~ ".",
+      TRUE ~ ""
+    )
+  ) %>%
+  write_xlsx("summary_modelsquad.xlsx")
+# *** p < 0.001; ** p < 0.01; * p < 0.05; . p < 0.1
 
-head(results)
+# for linear coefficients SC1 - SC7 comparison
 
-identification_check <- df_choice %>%
-  group_by(group, year) %>%
-  summarise(
-    total_n = sum(n),
-    n_boroughs = n_distinct(borough),
-    sd_ethnic = sd(frac_homoe),
-    sd_class = sd(frac_homos),
-    correlation = cor(
-      frac_homoe,
-      frac_homos
-    ),
-    .groups = "drop"
-  )
-
-summary(identification_check)
-
-results <- tibble(
+coef_df <- tibble(
   term = names(coef(mod_B_quad)),
   estimate = unname(coef(mod_B_quad))
 ) %>%
-  filter(str_detect(term, "frac_homoe|frac_homos")) %>%
-  mutate(
-    dimension = if_else(
-      str_detect(term, "frac_homoe$"),
-      "Ethnic",
-      "Social class"
-    ),
-    group_year = str_remove(
-      term,
-      "^group_year::"
-    ) %>%
-      str_remove(":frac_homoe$") %>%
-      str_remove(":frac_homos$"),
-    year = as.integer(str_extract(group_year, "\\d{4}$")),
-    group = str_remove(group_year, "_\\d{4}$")
-  ) %>%
-  select(group, year, dimension, estimate)
-
-# # Calculate IQRs within each subgroup and wave
-# iqr_data <- df_choice %>%
-#   group_by(group, year) %>%
-#   summarise(
-#     Ethnic = IQR(frac_homoe, na.rm = TRUE),
-#     `Social class` = IQR(frac_homos, na.rm = TRUE),
-#     .groups = "drop"
-#   ) %>%
-#   pivot_longer(
-#     cols = c(Ethnic, `Social class`),
-#     names_to = "dimension",
-#     values_to = "IQR"
-#   )
-# 
-# # Join estimated coefficients to the IQRs
-# results_iqr <- results %>%
-#   mutate(year = as.integer(year)) %>%
-#   left_join(
-#     iqr_data,
-#     by = c("group", "year", "dimension")
-#   ) %>%
-#   mutate(
-#     effect_IQR = estimate * IQR,
-#     OR_IQR = exp(effect_IQR)
-#   )
-# 
-# results_iqr %>%
-#   filter(group %in% c(
-#     "asian_indian_sc1",
-#     "asian_chinese_sc1",
-#     "asian_indian_sc7"
-#   )) %>%
-#   arrange(group, year, dimension)
-# 
-# ggplot(
-#   results_iqr,
-#   aes(
-#     x = factor(year),
-#     y = effect_IQR,
-#     color = dimension,
-#     group = dimension
-#   )
-# ) +
-#   geom_line() +
-#   geom_point(size = 2) +
-#   facet_wrap(~group, scales = "free_y") +
-#   labs(
-#     x = "Census wave",
-#     y = "IQR-adjusted log relative odds",
-#     color = "Dimension"
-#   ) +
-#   theme_bw()
-# 
-# ggplot(
-#   results_iqr,
-#   aes(
-#     x = factor(year),
-#     y = group,
-#     fill = effect_IQR
-#   )
-# ) +
-#   geom_tile() +
-#   facet_wrap(~dimension, nrow = 1) +
-#   scale_fill_gradient2(midpoint = 0) +
-#   labs(
-#     x = "Census wave",
-#     y = "Ethnic–social-class subgroup",
-#     fill = "IQR effect"
-#   ) +
-#   theme_minimal()
-# 
-# comparison <- results_iqr %>%
-#   select(group, year, dimension, effect_IQR) %>%
-#   pivot_wider(
-#     names_from = dimension,
-#     values_from = effect_IQR
-#   ) %>%
-#   mutate(
-#     difference = Ethnic - `Social class`
-#   )
-# 
-# ggplot(
-#   comparison,
-#   aes(
-#     x = factor(year),
-#     y = reorder(group, difference),
-#     fill = difference
-#   )
-# ) +
-#   geom_tile() +
-#   scale_fill_gradient2(midpoint = 0) +
-#   labs(
-#     x = "Census wave",
-#     y = "Subgroup",
-#     fill = "Ethnic − class"
-#   ) +
-#   theme_minimal()
-# 
-# df_prob <- df_choice %>%
-#   mutate(
-#     predicted_n = as.numeric(
-#       predict(mod_B, newdata = df_choice, type = "response")
-#     )
-#   ) %>%
-#   group_by(group, year) %>%
-#   mutate(
-#     predicted_prob = predicted_n / sum(predicted_n),
-#     observed_prob = n / sum(n)
-#   ) %>%
-#   ungroup()
-# 
-# model_fit <- df_prob %>%
-#   group_by(group, year) %>%
-#   summarise(
-#     MAE = mean(
-#       abs(observed_prob - predicted_prob)
-#     ),
-#     
-#     RMSE = sqrt(mean(
-#       (observed_prob - predicted_prob)^2
-#     )),
-#     
-#     TVD = 0.5 * sum(
-#       abs(observed_prob - predicted_prob)
-#     ),
-#     
-#     .groups = "drop"
-#   )
-
-##
-
-coef_df <- tibble(
-  term = names(coef(mod_B)),
-  estimate = unname(coef(mod_B))
-) %>%
-  filter(str_detect(term, "frac_homoe|frac_homos")) %>%
+  filter(str_detect(term, ":(frac_homoe|frac_homos)$")) %>%
   mutate(
     dimension = if_else(
       str_detect(term, ":frac_homoe$"),
@@ -390,8 +246,7 @@ coef_df <- tibble(
     ),
     group_year = term %>%
       str_remove("^group_year::") %>%
-      str_remove(":frac_homoe$") %>%
-      str_remove(":frac_homos$")
+      str_remove(":(frac_homoe|frac_homos)$")
   ) %>%
   select(group_year, dimension, estimate) %>%
   pivot_wider(
@@ -410,508 +265,1039 @@ coef_df <- tibble(
   ) %>%
   relocate(group, ethnicity, socstatus, year, .after = group_year)
 
-
 coef_df %>% pivot_longer(
   cols = c(beta_E,beta_S),
   names_to = "dimension",
   values_to = "coefficient"
 ) %>% filter(socstatus %in%  c("sc1","sc7")) %>%
-  ggplot(aes(x = year, y = coefficient, 
-             color = socstatus, 
+  ggplot(aes(x = year, y = coefficient,
+             color = socstatus,
              linetype = dimension)) +
   geom_line() +
   geom_point() +
-  facet_wrap(~ ethnicity, scales = "free_y") +
-  scale_x_continuous(breaks = c(2001, 2011, 2021)) +
-  theme_bw()
-
-
-
-
-
-
-
-
-
-
-
-
-g <- "white_ewsnib_sc1"
-t <- 2001
-
-b <- coef_df %>%
-  filter(group_year == paste0(g, "_", t))
-
-beta_E <- b$beta_E
-beta_S <- b$beta_S
-
-print(b)
-
-d <- df_choice %>%
-  filter(group == g, year == t) %>%
-  arrange(borough)
-
-V <- with(
-  d,
-  log(pop_borough) +
-    beta_E * frac_homoe +
-    beta_S * frac_homos
-)
-
-
-prob_curve <- function(variable, values) {
-  
-  bind_rows(lapply(seq_len(nrow(d)), function(j) {
-    
-    bind_rows(lapply(values, function(x) {
-      
-      V_new <- V
-      
-      if (variable == "Ethnic") {
-        
-        V_new[j] <- log(d$pop_borough[j]) +
-          beta_E * x +
-          beta_S * d$frac_homos[j]
-        
-      } else if (variable == "Social class") {
-        
-        V_new[j] <- log(d$pop_borough[j]) +
-          beta_E * d$frac_homoe[j] +
-          beta_S * x
-        
-      } else {
-        stop("Use 'Ethnic' or 'Social class'")
-      }
-      
-      # Multinomial probabilities across all 33 boroughs
-      w <- exp(V_new - max(V_new))
-      p <- w / sum(w)
-      
-      data.frame(
-        borough = d$borough[j],
-        concentration = x,
-        probability = p[j],
-        dimension = variable
-      )
-    }))
-  }))
-}
-
-curve_E <- prob_curve(
-  variable = "Ethnic",
-  values = seq(
-    min(d$frac_homoe),
-    max(d$frac_homoe),
-    length.out = 100
-  )
-)
-
-curve_S <- prob_curve(
-  variable = "Social class",
-  values = seq(
-    min(d$frac_homos),
-    max(d$frac_homos),
-    length.out = 100
-  )
-)
-
-curves_avg <- bind_rows(curve_E, curve_S) %>%
-  group_by(dimension, concentration) %>%
-  summarise(
-    mean_probability = mean(probability),
-    .groups = "drop"
-  )
-
-ggplot(
-  curves_avg,
-  aes(
-    x = concentration,
-    y = mean_probability,
-    color = dimension
-  )
-) +
-  geom_line(linewidth = 1.1) +
-  scale_x_continuous(labels = scales::percent) +
-  scale_y_continuous(labels = scales::percent) +
   labs(
-    title = "Indian SC1 — 2021",
-    subtitle = "33-alternative conditional logit",
-    x = "Neighbourhood concentration",
-    y = "Mean predicted selection probability",
-    color = "Dimension"
+    x = "Year",
+    y = "Linear Coefficient",
+    title = "Differences in linear coefficients SC1-SC7",
+    color = "Social class"
   ) +
-  theme_bw()
+  scale_linetype_manual(
+    name = "Dimension",
+    values = c(
+      "beta_E" = "solid",
+      "beta_S" = "dashed"
+    ),
+    labels = c(
+      "beta_E" = "Ethnic",
+      "beta_S" = "Social class"
+    )
+  ) +
+facet_wrap(~ ethnicity, scales = "free_y") +
+  scale_x_continuous(breaks = c(2001, 2011, 2021)) +
+  theme_bw() + 
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.direction = "horizontal"
+  ) +
+  guides(
+    color = guide_legend(ncol = 2, order = 1),
+    linetype = guide_legend(ncol = 2, order = 1)
+  )
+ggsave("sc1_sc7_linearcomp.jpg", width = 8, height = 6)
 
-# margin
 
-df_ame <- df_prob %>%
-  left_join(
-    coef_df,
-    by = "group_year"
+
+#### Marginal effects quadratic model
+
+coef_df_sq <- tibble(
+  term = names(coef(mod_B_quad)),
+  estimate = unname(coef(mod_B_quad))
+) %>%
+  extract(
+    term,
+    into = c("group_year", "dimension", "order"),
+    regex = "^group_year::(.+):(frac_homoe|frac_homos)(_sq)?$",
+    remove = FALSE
+  ) %>%
+  filter(!is.na(group_year)) %>%
+  mutate(
+    order = if_else(order == "_sq", "quadratic", "linear"),
+    dimension = recode(
+      dimension,
+      frac_homoe = "Ethnic",
+      frac_homos = "Social"
+    )
+  ) %>%
+  select(group_year, dimension, order, estimate) %>%
+  pivot_wider(
+    names_from = order,
+    values_from = estimate
+  ) %>%
+  extract(
+    group_year,
+    into = c("ethnicity", "socstatus", "year"),
+    regex = "^(?:asian|black|white|mixed)_(.*)_(sc[1-7])_(\\d{4})$",
+    remove = FALSE
   ) %>%
   mutate(
-    # Marginal effects of ethnic concentration
-    ME_ethnic = beta_E *
-      predicted_prob * (1 - predicted_prob),
-    
-    # Marginal effects of social-class concentration
-    ME_class = beta_S *
-      predicted_prob * (1 - predicted_prob)
+    group = paste(ethnicity, socstatus, sep = "_"),
+    year = as.integer(year)
   ) %>%
-  group_by(group, year) %>%
-  summarise(
-    AME_ethnic = mean(ME_ethnic),
-    AME_class = mean(ME_class),
+  relocate(
+    group, ethnicity, socstatus, year,
+    .after = group_year
+  ) 
+
+# Variance-covariance matrix
+V <- vcov(mod_B_quad, vcov = ~ borough)
+
+marginal_effects <- coef_df_sq %>%
+  crossing(concentration = seq(0, 100, 1)) %>%
+  mutate(
+    marginal_effect = linear + 2 * quadratic * concentration
+  ) %>% 
+  mutate(
+    dimension_var = recode(
+      dimension,
+      Ethnic = "frac_homoe",
+      Social = "frac_homos"
+    ),
     
-    # Effects of a 1 percentage-point increase
-    AME_ethnic_1pp = AME_ethnic * 0.01,
-    AME_class_1pp = AME_class * 0.01,
-    
-    .groups = "drop"
-  )
-
-df_ame %>%
-  filter(
-    group == "asian_indian_sc1",
-    year == 2021
-  )
-
-df_ame %>%
-  filter(group == "asian_indian_sc1") %>%
-  select(
-    year,
-    AME_ethnic_1pp,
-    AME_class_1pp
-  ) %>%
-  pivot_longer(
-    cols = starts_with("AME_"),
-    names_to = "dimension",
-    values_to = "AME"
-  ) %>%
-  ggplot(aes(
-    x = factor(year),
-    y = AME,
-    fill = dimension
-  )) +
-  geom_col(position = "dodge") +
-  scale_y_continuous(
-    labels = scales::percent
-  ) +
-  labs(
-    title = "Indian SC1 — Average marginal effects",
-    x = "Year",
-    y = "Change in selection probability (percentage points)",
-    fill = "Dimension"
-  ) +
-  theme_bw()
-##
-# Select subgroup and year
-g <- "asian_chinese_sc1"
-year_selected <- 2021
-
-# Extract estimated coefficients
-b <- coef_df %>%
-  filter(group_year == paste0(g, "_", year_selected))
-
-beta_E <- b$beta_E
-beta_S <- b$beta_S
-
-# Original choice set
-d <- df_choice %>%
-  filter(
-    group == g,
-    year == year_selected
-  ) %>%
-  arrange(borough)
-
-# Baseline utilities
-V <- with(
-  d,
-  log(pop_borough) +
-    beta_E * frac_homoe +
-    beta_S * frac_homos
-)
-
-# Simulate probabilities
-simulate_prob <- function(variable) {
-  
-  concentrations <- seq(0, 1, by = 0.01)
-  
-  bind_rows(lapply(seq_len(nrow(d)), function(j) {
-    
-    bind_rows(lapply(concentrations, function(x) {
-      
-      V_new <- V
-      
-      if (variable == "Ethnic") {
+    inference = pmap(
+      list(group_year, dimension_var, concentration),
+      function(group_year, dimension_var, concentration) {
         
-        V_new[j] <- log(d$pop_borough[j]) +
-          beta_E * x +
-          beta_S * d$frac_homos[j]
+        # Identify linear and quadratic coefficients
+        name_linear <- paste0(
+          "group_year::", group_year,
+          ":", dimension_var
+        )
         
-      } else if (variable == "Social class") {
+        name_quadratic <- paste0(
+          "group_year::", group_year,
+          ":", dimension_var, "_sq"
+        )
         
-        V_new[j] <- log(d$pop_borough[j]) +
-          beta_E * d$frac_homoe[j] +
-          beta_S * x
+        terms <- c(name_linear, name_quadratic)
+        
+        if (!all(terms %in% rownames(V))) {
+          stop(
+            "Missing coefficients: ",
+            paste(setdiff(terms, rownames(V)),
+                  collapse = ", ")
+          )
+        }
+        
+        # Extract 2x2 covariance matrix
+        V_sub <- V[terms, terms, drop = FALSE]
+        
+        # Gradient of marginal effect
+        R <- matrix(
+          c(1, 2 * concentration),
+          nrow = 1
+        )
+        
+        # Variance and standard error
+        variance <- as.numeric(
+          R %*% V_sub %*% t(R)
+        )
+        
+        tibble(
+          se = sqrt(variance)
+        )
       }
-      
-      # Multinomial probabilities
-      w <- exp(V_new - max(V_new))
-      P <- w / sum(w)
-      
-      tibble(
-        borough = d$borough[j],
-        concentration = x,
-        probability = P[j],
-        dimension = variable
+    )
+  ) %>%
+  unnest(inference) %>%
+  mutate(
+    z_value = marginal_effect / se,
+    
+    p_value = 2 * pnorm(-abs(z_value)),
+    
+    ci_lower = marginal_effect - 1.96 * se,
+    ci_upper = marginal_effect + 1.96 * se,
+    
+    significant = p_value < 0.05
+  ) %>%
+  select(-dimension_var)
+
+for (i in unique(coef_df_sq$ethnicity)) { 
+  
+marginal_effects %>%
+  filter(
+    ethnicity == i
+  ) %>%
+  ggplot(
+    aes(
+      x = concentration,
+      y = marginal_effect,
+      color = factor(year) ,
+      linetype = dimension
+    )
+  ) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line() +
+  facet_wrap(~ socstatus, scales = "free_y") +
+  scale_linetype_manual(
+    values = c(
+      "Ethnic" = "solid",
+      "Social" = "dashed"
+    ),
+    labels = c(
+      "Ethnic" = "Ethnic",
+      "Social" = "Socio-occupational"
+    )
+  ) +
+    scale_color_manual(
+      values = c(
+        "2001" = "salmon",
+        "2011" = "green",
+        "2021" = "blue"
       )
-    }))
-  }))
+    ) +
+  labs(
+    x = "Residential concentration (%)",
+    y = "Marginal effect on log-odds",
+    color = "Dimension",
+    linetype = "Year",
+    title = str_to_title(i)
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.direction = "horizontal"
+  ) +
+    guides(
+      color = guide_legend(ncol = 3, order = 1),
+      linetype = guide_legend(ncol = 2, order = 1)
+    )
+  ggsave(paste0("figures_margeff/",i,".jpg"), width = 8, height = 8)
 }
 
-# Run simulations
-simulated_prob <- bind_rows(
-  simulate_prob("Ethnic"),
-  simulate_prob("Social class")
-)
+# Wald test quadratic model
 
-# Average over the 33 focal borough scenarios
-simulated_mean <- simulated_prob %>%
-  group_by(dimension, concentration) %>%
-  summarise(
-    probability = mean(probability),
-    .groups = "drop"
+library(fixest)
+library(dplyr)
+library(purrr)
+library(tibble)
+
+# Joint Wald test: Indian SC1 vs Indian SC7
+
+test_quad_difference <- function(
+    model,
+    year,
+    dimension = "frac_homoe",
+    vcov_type = ~ borough
+) {
+  
+  # 1. Extract coefficients and covariance matrix
+  cf <- coef(model)
+  V <- vcov(model, vcov = vcov_type)
+  
+  # 2. Identify coefficients for Indian SC1
+  name_sc1 <- paste0(
+    "group_year::asian_indian_sc1_",
+    year, ":", dimension
+  )
+  
+  # 3. Identify coefficients for Indian SC7
+  name_sc7 <- paste0(
+    "group_year::asian_indian_sc7_",
+    year, ":", dimension
+  )
+  
+  # 4. Select linear and quadratic coefficients
+  terms <- c(
+    name_sc1,
+    paste0(name_sc1, "_sq"),
+    name_sc7,
+    paste0(name_sc7, "_sq")
+  )
+  
+  # Check that coefficients exist
+  if (!all(terms %in% names(cf))) {
+    stop(
+      "Some coefficients were not found:\n",
+      paste(setdiff(terms, names(cf)), collapse = "\n")
+    )
+  }
+  
+  # 5. Extract the four coefficients
+  b <- cf[terms]
+  
+  # 6. Extract their covariance matrix
+  V_sub <- V[terms, terms, drop = FALSE]
+  
+  # 7. Define the two equality restrictions
+  R <- matrix(
+    c(
+      1, 0, -1, 0,
+      0, 1, 0, -1
+    ),
+    nrow = 2,
+    byrow = TRUE
+  )
+  
+  # 8. Calculate coefficient differences
+  d <- as.vector(R %*% b)
+  
+  # 9. Calculate covariance of the differences
+  V_d <- R %*% V_sub %*% t(R)
+  
+  # 10. Calculate Wald statistic
+  W <- as.numeric(
+    t(d) %*% solve(V_d, d)
+  )
+  
+  # 11. Calculate p-value
+  p <- pchisq(
+    W,
+    df = 2,
+    lower.tail = FALSE
+  )
+  
+  # 12. Return results
+  tibble(
+    year = year,
+    dimension = dimension,
+    
+    beta_linear_SC1 = unname(b[1]),
+    beta_quadratic_SC1 = unname(b[2]),
+    
+    beta_linear_SC7 = unname(b[3]),
+    beta_quadratic_SC7 = unname(b[4]),
+    
+    diff_linear = d[1],
+    diff_quadratic = d[2],
+    
+    Wald_chisq = W,
+    df = 2,
+    p_value = p
+  )
+}
+
+wald_results <- expand.grid(
+  year = c(2001, 2011, 2021),
+  dimension = c("frac_homoe", "frac_homos")
+) %>%
+  pmap_dfr(function(year, dimension) {
+    
+    test_quad_difference(
+      model = mod_B_quad,
+      year = year,
+      dimension = dimension
+    )
+    
+  })
+
+wald_results %>%
+  mutate(
+    significant = p_value < 0.05
   )
 
-ggplot(
-  simulated_mean,
+# Run the tests for 2021
+
+wald_ethnic_2021 <- test_quad_difference(
+  model = mod_B_quad,
+  year = 2021,
+  dimension = "frac_homoe"
+)
+
+wald_social_2021 <- test_quad_difference(
+  model = mod_B_quad,
+  year = 2021,
+  dimension = "frac_homos"
+)
+
+bind_rows(
+  wald_ethnic_2021,
+  wald_social_2021
+)
+
+# Wald test on the marginals
+
+marginal_diff <- marginal_effects %>%
+  filter(
+    ethnicity == "indian",
+    socstatus %in% c("sc1", "sc7")
+  ) %>%
+  select(
+    year, dimension, concentration,
+    socstatus, marginal_effect
+  ) %>%
+  pivot_wider(
+    names_from = socstatus,
+    values_from = marginal_effect
+  ) %>%
+  mutate(
+    difference = sc1 - sc7
+  )
+
+# Variance-covariance matrix clustered by borough
+V <- vcov(mod_B_quad, vcov = ~ borough)
+
+wald_marginal <- marginal_diff %>%
+  mutate(
+    dimension_var = recode(
+      dimension,
+      Ethnic = "frac_homoe",
+      Social = "frac_homos"
+    )
+  ) %>%
+  mutate(
+    test = pmap(
+      list(year, dimension_var, concentration, difference),
+      
+      function(year, dimension_var, concentration, difference) {
+        
+        # Names of the coefficients in mod_B_quad
+        name_sc1 <- paste0(
+          "group_year::asian_indian_sc1_",
+          year, ":", dimension_var
+        )
+        
+        name_sc7 <- paste0(
+          "group_year::asian_indian_sc7_",
+          year, ":", dimension_var
+        )
+        
+        terms <- c(
+          name_sc1,
+          paste0(name_sc1, "_sq"),
+          name_sc7,
+          paste0(name_sc7, "_sq")
+        )
+        
+        # Check that all coefficients exist
+        if (!all(terms %in% rownames(V))) {
+          stop(
+            "Missing coefficients: ",
+            paste(
+              setdiff(terms, rownames(V)),
+              collapse = ", "
+            )
+          )
+        }
+        
+        # Covariance matrix of the four coefficients
+        V_sub <- V[terms, terms, drop = FALSE]
+        
+        # Restriction at concentration C
+        R <- matrix(
+          c(1, 2 * concentration, -1, -2 * concentration),
+          nrow = 1
+        )
+        
+        # Standard error of the marginal-effect difference
+        variance <- as.numeric(
+          R %*% V_sub %*% t(R)
+        )
+        
+        se <- sqrt(variance)
+        
+        # Wald statistic (1 degree of freedom)
+        W <- (difference / se)^2
+        
+        tibble(
+          se = se,
+          ci_lower = difference - 1.96 * se,
+          ci_upper = difference + 1.96 * se,
+          Wald_chisq = W,
+          p_value = pchisq(
+            W,
+            df = 1,
+            lower.tail = FALSE
+          )
+        )
+      }
+    )
+  ) %>%
+  unnest(test) %>%
+  select(-dimension_var)
+
+wald_marginal %>%
+  filter(
+    year == 2021,
+    dimension == "Ethnic",
+    concentration == 20
+  ) %>%
+  select(
+    year, dimension, concentration,
+    sc1, sc7, difference,
+    se, ci_lower, ci_upper,
+    Wald_chisq, p_value
+  )
+
+
+# to read as Odds Ratio, multiplied by 0.10 because the actual scale of 
+# concentration is 0-1 in 0.01 steps, so the actual unit of increase is in
+# decimals. It is easier to read
+
+or_results <- coeftable(mod_B_quad) %>%
+  as.data.frame() %>%
+  rownames_to_column("term") %>%
+  mutate(
+    OR = exp(Estimate),
+    pct_change_odds = (OR - 1) * 100
+  ) %>%
+  extract(
+    term,
+    into = c("ethnicity", "socstatus", "year","variable"),
+#    regex = "^(?:group_year::)?(?:asian|black|white|mixed)_(.+)_(sc[1-7])_(\\d{4}):(frac_homoe|frac_homos)$",
+#regex = "^(?:group_year::)?(?:asian|black|white|mixed)_(.+)_(sc[1-7])_(\\d{4}):(frac_homoe|frac_homos)_c(?:_sq)?$",
+regex = "^(?:group_year::)?(?:asian|black|white|mixed)_(.+)_(sc[1-7])_(\\d{4}):((?:frac_homoe|frac_homos)(?:_sq)?)$",
+    remove = FALSE
+  ) %>%
+  mutate(
+    term = str_remove(term,"group_year::")
+  )
+
+or_results
+
+or_quadratic <- coef_df %>%
+  crossing(
+    concentration = seq(0, 99, 1)
+  ) %>%
+  mutate(
+    OR = exp(
+      linear + quadratic * (2 * concentration + 1)
+    ),
+    pct_change_odds = (OR - 1) * 100
+  )
+
+# average probability
+
+
+simulate_probabilities <- function(
+    model,
+    data,
+    selected_group,
+    x_grid = seq(0, 100, 1)
+) {
+  
+  # Extract coefficients
+  beta_E <- coef(model)[
+    paste0("group_year::", selected_group, ":frac_homoe")
+  ]
+  
+  beta_S <- coef(model)[
+    paste0("group_year::", selected_group, ":frac_homos")
+  ]
+  
+  stopifnot(
+    length(beta_E) == 1, !is.na(beta_E),
+    length(beta_S) == 1, !is.na(beta_S)
+  )
+  
+  # Observed choice set
+  df_g <- data %>%
+    filter(group_year == selected_group)
+  
+  df_g$pred_count <- as.numeric(
+    predict(model, newdata = df_g, type = "response")
+  )
+  
+  # Simulate concentrations
+  map_dfr(x_grid, function(x) {
+    
+    probabilities <- sapply(seq_len(nrow(df_g)), function(j) {
+      
+      mu_E <- df_g$pred_count
+      mu_E[j] <- mu_E[j] * exp(
+        beta_E * (x - df_g$frac_homoe[j])
+      )
+      
+      mu_S <- df_g$pred_count
+      mu_S[j] <- mu_S[j] * exp(
+        beta_S * (x - df_g$frac_homos[j])
+      )
+      
+      c(
+        ethnic = mu_E[j] / sum(mu_E),
+        social = mu_S[j] / sum(mu_S)
+      )
+    })
+    
+    tibble(
+      group_year = selected_group,
+      concentration = x,
+      mean_prob_ethnic = mean(probabilities["ethnic", ]),
+      mean_prob_social = mean(probabilities["social", ])
+    )
+  })
+}
+
+
+for (i in unique(str_remove(df_choice$group_year, "_\\d{4}$"))) {
+  
+  selected_groups <- paste0(
+    i, "_", c(2001, 2011, 2021)
+  )
+  
+
+sim_results_all <- map_dfr(
+  selected_groups,
+  ~ simulate_probabilities(
+    model = mod_B,
+    data = df_choice,
+    selected_group = .x
+  )
+)
+
+sim_results_long <- sim_results_all %>%
+  mutate(
+    year = as.integer(sub(".*_(\\d{4})$", "\\1", group_year))
+  ) %>%
+  pivot_longer(
+    cols = c(mean_prob_ethnic, mean_prob_social),
+    names_to = "dimension",
+    values_to = "probability"
+  ) %>%
+  mutate(
+    dimension = recode(
+      dimension,
+      mean_prob_ethnic = "Ethnic concentration",
+      mean_prob_social = "Social-class concentration"
+    )
+  )
+
+group_label <- i %>%
+  str_remove("^(asian|black|white|mixed)_") %>%
+  str_replace_all("_", " ") %>%
+  str_to_title() %>%
+  str_replace("Sc([1-7])$", "SC\\1")
+
+sim_results_long  %>%
+  ggplot(
   aes(
     x = concentration,
     y = probability,
-    color = dimension
+    color = factor(year),
+    linetype = dimension
   )
 ) +
-  geom_line(linewidth = 1.2) +
-  scale_x_continuous(
-    breaks = seq(0, 1, 0.1),
-    labels = scales::percent
-  ) +
-  scale_y_continuous(
-    labels = scales::percent
-  ) +
+  geom_line(linewidth = 1.1) + 
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(breaks = seq(0, 100, 10)) +
   labs(
-    title = "Indian SC1 — 2021",
-    subtitle = "Simulated multinomial residential selection",
-    x = "Neighbourhood concentration",
-    y = "Mean predicted selection probability",
-    color = "Dimension"
+    x = "Concentration (%)",
+    y = "Average predicted residential probability",
+    color = "Year",
+    title = paste0(group_label, ": 2001–2021")
   ) +
+  scale_linetype_manual(name = "Dimension",
+                        values = c(
+                          "Ethnic concentration" = "solid",
+                          "Social-class concentration" = "dashed"
+                        ),
+                        labels = c("Ethnic concentration" = "Ethnic",
+                                   "Social-class concentration" = "Socio-occupational")
+                        ) +
   theme_bw()
-
-# PROB
-
-simulate_mean_probability <- function(
-    model,
-    data,
-    subgroup,
-    census_year,
-    dimension = "ethnic",
-    values = seq(0, 1, 0.01)
-) {
-  
-  base <- data %>%
-    filter(
-      group == subgroup,
-      year == census_year
-    )
-  
-  var <- if (dimension == "ethnic") {
-    "frac_homoe"
-  } else if (dimension == "social") {
-    "frac_homos"
-  } else {
-    stop("Invalid dimension")
-  }
-  
-  map_dfr(values, function(x) {
-    
-    borough_probs <- map_dbl(
-      unique(base$borough),
-      function(b) {
-        
-        simulated <- base
-        
-        simulated[[var]][
-          simulated$borough == b
-        ] <- x
-        
-        simulated <- simulated %>%
-          mutate(
-            frac_homoe_sq = frac_homoe^2,
-            frac_homos_sq = frac_homos^2
-          )
-        
-        pred <- as.numeric(
-          predict(
-            model,
-            newdata = simulated,
-            type = "response"
-          )
-        )
-        
-        prob <- pred / sum(pred)
-        
-        prob[simulated$borough == b]
-      }
-    )
-    
-    tibble(
-      concentration = x,
-      mean_probability = mean(borough_probs),
-      dimension = dimension
-    )
-  })
+ggsave(paste0("figures_prob/",i,".jpg"))
 }
 
-sim_mean <- bind_rows(
-  simulate_mean_probability(
-    mod_B_quad, df_choice,
-    subgroup = "asian_indian_sc1",
-    census_year = 2021,
-    dimension = "ethnic"
-  ),
-  simulate_mean_probability(
-    mod_B_quad, df_choice,
-    subgroup = "asian_indian_sc1",
-    census_year = 2021,
-    dimension = "social"
-  )
-)
+# for the quadratic
 
-ggplot(sim_mean,
-       aes(x = concentration,
-           y = mean_probability,
-           color = dimension)) +
-  geom_line(linewidth = 1.1) +
-  scale_y_continuous(labels = scales::percent) +
-  labs(
-    x = "Simulated concentration",
-    y = "Average predicted choice probability",
-    color = "Dimension"
-  ) +
-  theme_bw()
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
 
-##
-
-simulate_mean_fast <- function(
+simulate_probabilities_quad <- function(
     model,
     data,
-    subgroup,
-    census_year,
-    dimension = "ethnic",
-    values = seq(0, 1, by = 0.01)
+    selected_group,
+    x_grid = seq(0, 100, 1)
 ) {
   
-  base <- data %>%
-    filter(
-      group == subgroup,
-      year == census_year
-    ) %>%
-    mutate(
-      frac_homoe_sq = frac_homoe^2,
-      frac_homos_sq = frac_homos^2
-    )
+  # Extract linear and quadratic coefficients
+  beta_E1 <- coef(model)[
+    paste0("group_year::", selected_group, ":frac_homoe_c")
+  ]
   
-  # Predizioni iniziali
-  pred <- as.numeric(
-    predict(model, newdata = base, type = "response")
-  )
+  beta_E2 <- coef(model)[
+    paste0("group_year::", selected_group, ":frac_homoe_c_sq")
+  ]
   
-  p0 <- pred / sum(pred)
+  beta_S1 <- coef(model)[
+    paste0("group_year::", selected_group, ":frac_homos_c")
+  ]
   
-  # Coefficienti del sottogruppo-anno
-  gy <- unique(base$group_year)
-  
-  stopifnot(length(gy) == 1)
-  
-  cf <- coef(model)
-  
-  var <- if (dimension == "ethnic") {
-    "frac_homoe"
-  } else {
-    "frac_homos"
-  }
-  
-  beta1 <- unname(cf[paste0("group_year::", gy, ":", var)])
-  beta2 <- unname(cf[paste0("group_year::", gy, ":", var, "_sq")])
+  beta_S2 <- coef(model)[
+    paste0("group_year::", selected_group, ":frac_homos_c_sq")
+  ]
   
   stopifnot(
-    length(beta1) == 1,
-    length(beta2) == 1,
-    !is.na(beta1),
-    !is.na(beta2)
+    !is.na(beta_E1),
+    !is.na(beta_E2),
+    !is.na(beta_S1),
+    !is.na(beta_S2)
   )
   
-  old <- base[[var]]
+  # Observed choice set
+  df_g <- data %>%
+    filter(group_year == selected_group)
   
-  # Ogni colonna corrisponde a un borough,
-  # ogni riga a una concentrazione simulata
-  delta <- outer(values, old, function(x, c) {
-    beta1 * (x - c) +
-      beta2 * (x^2 - c^2)
+  df_g$pred_count <- as.numeric(
+    predict(model, newdata = df_g, type = "response")
+  )
+  
+  # Group-year-specific centering constants
+  mean_E <- mean(df_g$frac_homoe)
+  mean_S <- mean(df_g$frac_homos)
+  
+  # Simulate concentrations
+  map_dfr(x_grid, function(x) {
+    
+    # Center simulated concentrations
+    x_E_c <- x - mean_E
+    x_S_c <- x - mean_S
+    
+    probabilities <- sapply(seq_len(nrow(df_g)), function(j) {
+      
+      # ETHNIC CONCENTRATION
+      mu_E <- df_g$pred_count
+      
+      delta_E <-
+        beta_E1 * (
+          x_E_c - df_g$frac_homoe_c[j]
+        ) +
+        beta_E2 * (
+          x_E_c^2 - df_g$frac_homoe_c_sq[j]
+        )
+      
+      mu_E[j] <- mu_E[j] * exp(delta_E)
+      
+      prob_E <- mu_E[j] / sum(mu_E)
+      
+      # SOCIO-OCCUPATIONAL CONCENTRATION
+      mu_S <- df_g$pred_count
+      
+      delta_S <-
+        beta_S1 * (
+          x_S_c - df_g$frac_homos_c[j]
+        ) +
+        beta_S2 * (
+          x_S_c^2 - df_g$frac_homos_c_sq[j]
+        )
+      
+      mu_S[j] <- mu_S[j] * exp(delta_S)
+      
+      prob_S <- mu_S[j] / sum(mu_S)
+      
+      c(
+        ethnic = prob_E,
+        social = prob_S
+      )
+    })
+    
+    tibble(
+      group_year = selected_group,
+      concentration = x,
+      mean_prob_ethnic = mean(probabilities["ethnic", ]),
+      mean_prob_social = mean(probabilities["social", ])
+    )
   })
+}
+
+dir.create("figures_prob_quad", showWarnings = FALSE)
+
+groups <- unique(
+  str_remove(df_choice$group_year, "_\\d{4}$")
+)
+
+for (i in groups) {
   
-  # Formula esatta della probabilità controfattuale
-  # modificando un solo borough per volta
-  z <- exp(pmin(delta, 700))
+  selected_groups <- paste0(
+    i, "_", c(2001, 2011, 2021)
+  )
   
-  prob <- sweep(z, 2, p0, "*") /
-    (1 + sweep(z - 1, 2, p0, "*"))
+  sim_results_all <- map_dfr(
+    selected_groups,
+    ~ simulate_probabilities_quad(
+      model = mod_B_quad_c,
+      data = df_choice,
+      selected_group = .x
+    )
+  )
   
-  tibble(
-    concentration = values,
-    mean_probability = rowMeans(prob),
-    dimension = dimension,
-    year = census_year,
-    group = subgroup
+  sim_results_long <- sim_results_all %>%
+    mutate(
+      year = as.integer(
+        str_extract(group_year, "\\d{4}$")
+      )
+    ) %>%
+    pivot_longer(
+      cols = c(mean_prob_ethnic, mean_prob_social),
+      names_to = "dimension",
+      values_to = "probability"
+    ) %>%
+    mutate(
+      dimension = recode(
+        dimension,
+        mean_prob_ethnic = "Ethnic concentration",
+        mean_prob_social = "Social-class concentration"
+      )
+    )
+  
+  group_label <- i %>%
+    str_remove("^(asian|black|white|mixed)_") %>%
+    str_replace_all("_", " ") %>%
+    str_to_title() %>%
+    str_replace("Sc([1-7])$", "SC\\1")
+  
+  p <- ggplot(
+    sim_results_long,
+    aes(
+      x = concentration,
+      y = probability,
+      color = factor(year),
+      linetype = dimension
+    )
+  ) +
+    geom_line(linewidth = 1.1) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_continuous(breaks = seq(0, 100, 10)) +
+    scale_linetype_manual(
+      name = "Dimension",
+      values = c(
+        "Ethnic concentration" = "solid",
+        "Social-class concentration" = "dashed"
+      ),
+      labels = c(
+        "Ethnic concentration" = "Ethnic",
+        "Social-class concentration" = "Socio-occupational"
+      )
+    ) +
+    labs(
+      x = "Concentration (%)",
+      y = "Average predicted residential probability",
+      color = "Year",
+      title = paste0(group_label, ": 2001–2021")
+    ) +
+    theme_bw()
+  
+  ggsave(
+    filename = paste0("figures_prob_quad/", i, ".jpg"),
+    plot = p,
+    width = 9,
+    height = 6,
+    dpi = 300
   )
 }
 
-sim_mean <- purrr::map_dfr(
-  c(2001, 2011, 2021),
-  function(y) {
-    purrr::map_dfr(
-      c("ethnic", "social"),
-      function(d) {
-        simulate_mean_fast(
-          model = mod_B_quad,
-          data = df_choice,
-          subgroup = "asian_indian_sc7",
-          census_year = y,
-          dimension = d
-        )
-      }
+# for quadratic not centered
+
+simulate_probabilities_quad <- function(
+    model,
+    data,
+    selected_group,
+    x_grid = seq(0, 100, 1)
+) {
+  
+  # Extract linear and quadratic coefficients
+  beta_E1 <- coef(model)[
+    paste0("group_year::", selected_group, ":frac_homoe")
+  ]
+  
+  beta_E2 <- coef(model)[
+    paste0("group_year::", selected_group, ":frac_homoe_sq")
+  ]
+  
+  beta_S1 <- coef(model)[
+    paste0("group_year::", selected_group, ":frac_homos")
+  ]
+  
+  beta_S2 <- coef(model)[
+    paste0("group_year::", selected_group, ":frac_homos_sq")
+  ]
+  
+  stopifnot(
+    length(beta_E1) == 1, !is.na(beta_E1),
+    length(beta_E2) == 1, !is.na(beta_E2),
+    length(beta_S1) == 1, !is.na(beta_S1),
+    length(beta_S2) == 1, !is.na(beta_S2)
+  )
+  
+  # Observed choice set
+  df_g <- data %>%
+    filter(group_year == selected_group)
+  
+  df_g$pred_count <- as.numeric(
+    predict(model, newdata = df_g, type = "response")
+  )
+  
+  # Simulate concentrations
+  map_dfr(x_grid, function(x) {
+    
+    probabilities <- sapply(seq_len(nrow(df_g)), function(j) {
+      
+      # ETHNIC CONCENTRATION
+      mu_E <- df_g$pred_count
+      
+      delta_E <-
+        beta_E1 * (x - df_g$frac_homoe[j]) +
+        beta_E2 * (x^2 - df_g$frac_homoe_sq[j])
+      
+      mu_E[j] <- mu_E[j] * exp(delta_E)
+      
+      prob_E <- mu_E[j] / sum(mu_E)
+      
+      # SOCIO-OCCUPATIONAL CONCENTRATION
+      mu_S <- df_g$pred_count
+      
+      delta_S <-
+        beta_S1 * (x - df_g$frac_homos[j]) +
+        beta_S2 * (x^2 - df_g$frac_homos_sq[j])
+      
+      mu_S[j] <- mu_S[j] * exp(delta_S)
+      
+      prob_S <- mu_S[j] / sum(mu_S)
+      
+      c(
+        ethnic = prob_E,
+        social = prob_S
+      )
+    })
+    
+    tibble(
+      group_year = selected_group,
+      concentration = x,
+      mean_prob_ethnic = mean(probabilities["ethnic", ]),
+      mean_prob_social = mean(probabilities["social", ])
     )
-  }
+  })
+}
+
+dir.create("figures_prob_quad_uncentered", showWarnings = FALSE)
+
+groups <- unique(
+  str_remove(df_choice$group_year, "_\\d{4}$")
 )
 
-ggplot(
-  sim_mean,
-  aes(
-    x = concentration,
-    y = mean_probability,
-    color = dimension
+for (i in groups) {
+  
+  selected_groups <- paste0(
+    i, "_", c(2001, 2011, 2021)
   )
-) +
-  geom_line(linewidth = 1.1) +
-  facet_wrap(~ year) +
-  scale_y_continuous(
-    labels = scales::percent
+  
+  sim_results_all <- map_dfr(
+    selected_groups,
+    ~ simulate_probabilities_quad(
+      model = mod_B_quad,
+      data = df_choice,
+      selected_group = .x
+    )
+  )
+  
+  sim_results_long <- sim_results_all %>%
+    mutate(
+      year = as.integer(
+        str_extract(group_year, "\\d{4}$")
+      )
+    ) %>%
+    pivot_longer(
+      cols = c(mean_prob_ethnic, mean_prob_social),
+      names_to = "dimension",
+      values_to = "probability"
+    ) %>%
+    mutate(
+      dimension = recode(
+        dimension,
+        mean_prob_ethnic = "Ethnic concentration",
+        mean_prob_social = "Social-class concentration"
+      )
+    )
+  
+  group_label <- i %>%
+    str_remove("^(asian|black|white|mixed)_") %>%
+    str_replace_all("_", " ") %>%
+    str_to_title() %>%
+    str_replace("Sc([1-7])$", "SC\\1")
+  
+  p <- ggplot(
+    sim_results_long,
+    aes(
+      x = concentration,
+      y = probability,
+      color = factor(year),
+      linetype = dimension
+    )
   ) +
-  labs(
-    x = "Simulated concentration",
-    y = "Average predicted choice probability",
-    color = "Dimension"
-  ) +
-  theme_bw()
+    geom_line(linewidth = 1.1) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_continuous(breaks = seq(0, 100, 10)) +
+    scale_linetype_manual(
+      name = "Dimension",
+      values = c(
+        "Ethnic concentration" = "solid",
+        "Social-class concentration" = "dashed"
+      ),
+      labels = c(
+        "Ethnic concentration" = "Ethnic",
+        "Social-class concentration" = "Socio-occupational"
+      )
+    ) +
+    labs(
+      x = "Concentration (%)",
+      y = "Average predicted residential probability",
+      color = "Year",
+      title = paste0(group_label, ": 2001–2021")
+    ) +
+    theme_bw()
+  
+  ggsave(
+    filename = paste0(
+      "figures_prob_quad_uncentered/", i, ".jpg"
+    ),
+    plot = p,
+    width = 9,
+    height = 6,
+    dpi = 300
+  )
+}
+
+# this for the linear model
+
+# picture difference between groups SC1 and SC7
+
+
+
+
+# Discarded
+# Model B quad: model B quadratic with standardization
+
+# df_choice <- df_choice %>%
+#   group_by(group_year) %>%
+#   mutate(
+#     frac_homoe_c = frac_homoe - mean(frac_homoe),
+#     frac_homos_c = frac_homos - mean(frac_homos),
+#     
+#     frac_homoe_c_sq = frac_homoe_c^2,
+#     frac_homos_c_sq = frac_homos_c^2
+#   ) %>%
+#   ungroup()
+# 
+# mod_B_quad_c <- fepois(
+#   n ~
+#     i(group_year, frac_homoe_c) +
+#     i(group_year, frac_homoe_c_sq) +
+#     i(group_year, frac_homos_c) +
+#     i(group_year, frac_homos_c_sq) |
+#     group_year,
+#   offset = ~ log(pop_borough),
+#   data = df_choice,
+#   fixef.rm = "none"
+# )
+# 
+# df_choice %>%
+#   group_by(group_year) %>%
+#   summarise(
+#     cor_ethnic = cor(frac_homoe_c, frac_homoe_c_sq),
+#     cor_social = cor(frac_homos_c, frac_homos_c_sq),
+#     .groups = "drop"
+#   )
