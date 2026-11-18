@@ -325,13 +325,13 @@ test_linear_difference <- function(
   
   # 2. Identify linear coefficient for Indian SC1
   name_ref <- paste0(
-     reference_grouplin , # "group_year::asian_indian_sc1_",
+     reference_grouplin ,  
     year, ":", dimension
   )
   
   # 3. Identify linear coefficient for Indian SC7
   name_other <- paste0(
-    reference_groupoth , # "group_year::asian_indian_sc7_",
+    reference_groupoth ,  
     year, ":", dimension
   )
   
@@ -418,12 +418,13 @@ expand.grid(
     test_linear_difference(
       model = mod_B_quad,
       year = year,
-      reference_grouplin = "group_year::asian_indian_sc3_",
-      reference_groupoth = "group_year::asian_indian_sc5_",
+      reference_grouplin = "group_year::mixed_whiteblcarribean_sc1_",
+      reference_groupoth = "group_year::mixed_whiteblcarribean_sc7_",
       dimension = dimension
     )
     
-  })
+  }) %>%
+  write_xlsx("wald_linear_whiteblcarribean.xlsx")
 
 
 #### Marginal effects quadratic model
@@ -600,7 +601,8 @@ marginal_effects %>%
 V <- vcov(mod_B_quad, vcov = ~ borough)
 
 # List to store results
-ethgrw <- "indian"
+macreth <- "mixed"
+ethgrw <- "whiteblcarribean"
 wald_list <- list()
 
 for (i in paste0("sc", 1:7)) {
@@ -608,7 +610,7 @@ for (i in paste0("sc", 1:7)) {
   # Reference class
   reference_sc <- marginal_effects %>%
     filter(
-      ethnicity == ethgrw , # "indian",
+      ethnicity == ethgrw , 
       socstatus == i
     ) %>%
     select(
@@ -619,7 +621,7 @@ for (i in paste0("sc", 1:7)) {
   # Compare reference class with every other Indian class
   marginal_diff <- marginal_effects %>%
     filter(
-      ethnicity == ethgrw, #"indian",
+      ethnicity == ethgrw,  
       socstatus != i
     ) %>%
     left_join(
@@ -656,14 +658,14 @@ for (i in paste0("sc", 1:7)) {
           
           # Reference coefficient names
           name_reference <- paste0(
-           "group_year::",macreth,"_", ethgrw, "_",          #  "group_year::asian_indian_",
+           "group_year::",macreth,"_", ethgrw, "_",  
             reference_class, "_",
             year, ":", dimension_var
           )
           
           # Comparison coefficient names
           name_other <- paste0(
-            "group_year::",macreth,"_", ethgrw, "_",          #   "group_year::asian_indian_",
+            "group_year::",macreth,"_", ethgrw, "_",   
             socstatus, "_",
             year, ":", dimension_var
           )
@@ -733,7 +735,75 @@ for (i in paste0("sc", 1:7)) {
 
 # Combine all results
 wald_marginal_all <- bind_rows(wald_list)
-write_xlsx(wald_marginal_all, "wald_marginal_indian.xlsx")
+write_xlsx(wald_marginal_all, paste0("wald_marginal/wald_marginal_",ethgrw,".xlsx"))
+
+# within-class marginal ethnic dimension
+
+marginal_effects %>% 
+  filter(
+    ! ethnicity %in% c("whiteasian","whiteblafrican","whiteblcarribean")
+  ) %>%
+  filter(socstatus %in% c("sc1","sc7")) %>%
+  filter(dimension == "Ethnic") %>%
+  ggplot(
+    aes(
+      x = concentration,
+      y = marginal_effect,
+      color = ethnicity 
+    )
+  ) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line() +
+  facet_grid(as.factor(year) ~ socstatus, scales = "free_y") +
+  labs(
+    x = "Ethnic concentration (%)",
+    y = "Marginal effect on log-odds",
+    color = "Ethnicity"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.direction = "horizontal"
+  ) +
+  guides(
+    color = guide_legend(ncol = 4, order = 1) 
+  )
+ggsave("marg_withclass_eth.jpg",width = 6, height = 8)
+
+# within-class marginal ethnic dimension
+
+marginal_effects %>% 
+  filter(
+    ! ethnicity %in% c("whiteasian","whiteblafrican","whiteblcarribean")
+  ) %>%
+  filter(socstatus %in% c("sc1","sc7")) %>%
+  filter(dimension == "Social") %>%
+  ggplot(
+    aes(
+      x = concentration,
+      y = marginal_effect,
+      color = ethnicity 
+    )
+  ) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line() +
+  facet_grid(as.factor(year) ~ socstatus, scales = "free_y") +
+  labs(
+    x = "Social class concentration (%)",
+    y = "Marginal effect on log-odds",
+    color = "Socio-occupational\nclass"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.direction = "horizontal"
+  ) +
+  guides(
+    color = guide_legend(ncol = 4, order = 1) 
+  )
+ggsave("marg_withclass_soc.jpg",width = 6, height = 8)
 
 
 #within-class ethnic Wald for marginal effects differences
@@ -871,6 +941,10 @@ wald_ethnic <- marginal_diff_ethnic %>%
   unnest(test) %>%
   select(-dimension_var)
 
+write_xlsx(wald_ethnic,"wald_marginal/wald_withinclass_eth.xlsx")
+
+
+
 # ODDS RATIO of quadratic model
 
 or_quadratic <- coef_df_sq %>%
@@ -892,82 +966,117 @@ simulate_probabilities_quad <- function(
     selected_group,
     x_grid = seq(0, 100, 1)
 ) {
-
-  # Extract linear and quadratic coefficients
+  
+  # Extract estimated coefficients
   beta_E1 <- coef(model)[
     paste0("group_year::", selected_group, ":frac_homoe")
   ]
-
+  
   beta_E2 <- coef(model)[
     paste0("group_year::", selected_group, ":frac_homoe_sq")
   ]
-
+  
   beta_S1 <- coef(model)[
     paste0("group_year::", selected_group, ":frac_homos")
   ]
-
+  
   beta_S2 <- coef(model)[
     paste0("group_year::", selected_group, ":frac_homos_sq")
   ]
-
+  
   stopifnot(
     length(beta_E1) == 1, !is.na(beta_E1),
     length(beta_E2) == 1, !is.na(beta_E2),
     length(beta_S1) == 1, !is.na(beta_S1),
     length(beta_S2) == 1, !is.na(beta_S2)
   )
-
-  # Observed choice set
+  
+  # Select subgroup-year and observed borough characteristics
   df_g <- data %>%
     filter(group_year == selected_group)
-
-  df_g$pred_count <- as.numeric(
-    predict(model, newdata = df_g, type = "response")
+  
+  stopifnot(
+    nrow(df_g) > 0,
+    all(df_g$pop_borough > 0),
+    !anyNA(df_g[, c(
+      "frac_homoe", "frac_homoe_sq",
+      "frac_homos", "frac_homos_sq", "pop_borough"
+    )])
   )
-
-  # Simulate concentrations
-  map_dfr(x_grid, function(x) {
-
+  
+  # Baseline systematic utility for all boroughs
+  utility_baseline <-
+    beta_E1 * df_g$frac_homoe +
+    beta_E2 * df_g$frac_homoe_sq +
+    beta_S1 * df_g$frac_homos +
+    beta_S2 * df_g$frac_homos_sq
+  
+  # Baseline multinomial choice probabilities
+  log_weights_baseline <- log(df_g$pop_borough) + utility_baseline
+  
+  weights_baseline <- exp(
+    log_weights_baseline - max(log_weights_baseline)
+  )
+  
+  prob_baseline <- weights_baseline / sum(weights_baseline)
+  
+  # Counterfactual simulations
+  results <- purrr::map_dfr(x_grid, function(x) {
+    
     probabilities <- sapply(seq_len(nrow(df_g)), function(j) {
-
-      # ETHNIC CONCENTRATION
-      mu_E <- df_g$pred_count
-
-      delta_E <-
-        beta_E1 * (x - df_g$frac_homoe[j]) +
-        beta_E2 * (x^2 - df_g$frac_homoe_sq[j])
-
-      # here the counterfactual multinomial probabilities for ethnic dimension
-      mu_E[j] <- mu_E[j] * exp(delta_E)
-
-      prob_E <- mu_E[j] / sum(mu_E)
-
-      # SOCIO-OCCUPATIONAL CONCENTRATION
-      mu_S <- df_g$pred_count
-
-      delta_S <-
-        beta_S1 * (x - df_g$frac_homos[j]) +
-        beta_S2 * (x^2 - df_g$frac_homos_sq[j])
-
-      # here the counterfactual multinomial probabilities for social class dimension
-      mu_S[j] <- mu_S[j] * exp(delta_S)
-
-      prob_S <- mu_S[j] / sum(mu_S)
-
+      
+      # ETHNIC CONCENTRATION COUNTERFACTUAL
+      
+      utility_E <- utility_baseline
+      
+      utility_E[j] <-
+        beta_E1 * x +
+        beta_E2 * x^2 +
+        beta_S1 * df_g$frac_homos[j] +
+        beta_S2 * df_g$frac_homos_sq[j]
+      
+      # Multinomial logit probabilities
+      log_weights_E <- log(df_g$pop_borough) + utility_E
+      
+      weights_E <- exp(log_weights_E - max(log_weights_E))
+      
+      prob_E <- weights_E[j] / sum(weights_E)
+      
+      
+      # SOCIAL CLASS CONCENTRATION COUNTERFACTUAL
+      
+      utility_S <- utility_baseline
+      
+      utility_S[j] <-
+        beta_E1 * df_g$frac_homoe[j] +
+        beta_E2 * df_g$frac_homoe_sq[j] +
+        beta_S1 * x +
+        beta_S2 * x^2
+      
+      # Multinomial logit probabilities
+      log_weights_S <- log(df_g$pop_borough) + utility_S
+      
+      # to avoid numeric overflow
+      # N(expU) because exp(log(pop) + U) = exp(log(pop)) * exp(U) = pop * exp(U)
+      weights_S <- exp(log_weights_S - max(log_weights_S))
+      
+      prob_S <- weights_S[j] / sum(weights_S)
+      
       c(
         ethnic = prob_E,
         social = prob_S
       )
     })
-
+    
     tibble(
       group_year = selected_group,
       concentration = x,
-      # the average probability from boroughs is extracted
       mean_prob_ethnic = mean(probabilities["ethnic", ]),
       mean_prob_social = mean(probabilities["social", ])
     )
   })
+  
+  return(results)
 }
 
 dir.create("figures_prob_quad", showWarnings = FALSE)
@@ -977,20 +1086,21 @@ groups <- unique(
 )
 
 for (i in groups) {
-
+  
   selected_groups <- paste0(
     i, "_", c(2001, 2011, 2021)
   )
-
+  
   sim_results_all <- map_dfr(
     selected_groups,
     ~ simulate_probabilities_quad(
       model = mod_B_quad,
       data = df_choice,
-      selected_group = .x
+      selected_group = .x,
+      x_grid = seq(0, 100, 1)
     )
   )
-
+  
   sim_results_long <- sim_results_all %>%
     mutate(
       year = as.integer(
@@ -1009,13 +1119,13 @@ for (i in groups) {
         mean_prob_social = "Social-class concentration"
       )
     )
-
+  
   group_label <- i %>%
     str_remove("^(asian|black|white|mixed)_") %>%
     str_replace_all("_", " ") %>%
     str_to_title() %>%
     str_replace("Sc([1-7])$", "SC\\1")
-
+  
   p <- ggplot(
     sim_results_long,
     aes(
@@ -1046,7 +1156,7 @@ for (i in groups) {
       title = paste0(group_label, ": 2001–2021")
     ) +
     theme_bw()
-
+  
   ggsave(
     filename = paste0(
       "figures_prob_quad/", i, ".jpg"
